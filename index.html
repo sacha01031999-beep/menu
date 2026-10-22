@@ -386,59 +386,112 @@
     const TELEGRAM_BOT_TOKEN = '8950609195:AAHKexvKK-aBz0a0Hp7mijJh0JGG6NbWATU';
     const TELEGRAM_CHAT_ID = '-1004475834198';
     const ADMIN_PASSWORD = 'sasha_top100';
+    const STORAGE_KEY = '3d_toys_catalog';
+    const CART_KEY = '3d_toys_cart';
 
-    // Firebase Database URL
     const FIREBASE_DB_URL = 'https://toys-store-b6960-default-rtdb.firebaseio.com/products';
 
     const defaultProducts = {
-      p1: { id: 'p1', title: 'Рухомий 3D Дракон', price: 350, desc: 'Гнучка деталізована фігурка з шовкового PLA пластику.', image: 'https://images.unsplash.com/photo-1563089145-599997674d42?auto=format&fit=crop&w=600&q=80' },
-      p2: { id: 'p2', title: '3D Головоломка Куб', price: 200, desc: 'Цікава антистрес головоломка для розвитку моторики.', image: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=600&q=80' },
-      p3: { id: 'p3', title: 'Забавний 3D Робот', price: 280, desc: 'Яскрава іграшка-робот із рухомими кінцівками.', image: 'https://images.unsplash.com/photo-1485827404703-89b55fcc595e?auto=format&fit=crop&w=600&q=80' }
+      p1: { id: 'p1', title: 'Рухомий 3D Дракон', price: 350, desc: 'Гнучка деталізована фігурка з шовкового PLA пластику.', image: 'https://images.unsplash.com/photo-1608889825103-eb5ed706fc64?auto=format&fit=crop&w=800&q=80' },
+      p2: { id: 'p2', title: '3D Головоломка Куб', price: 200, desc: 'Цікава антистрес головоломка для розвитку моторики.', image: 'https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=800&q=80' },
+      p3: { id: 'p3', title: 'Забавний 3D Робот', price: 280, desc: 'Яскрава іграшка-робот із рухомими кінцівками.', image: 'https://images.unsplash.com/photo-1581235720704-06d3acfcb36f?auto=format&fit=crop&w=800&q=80' }
     };
 
     let productsMap = {};
-    let cart = JSON.parse(localStorage.getItem('3d_toys_cart')) || [];
+    let cart = [];
     let isAdmin = localStorage.getItem('3d_toys_is_admin') === 'true';
     let tempUploadedImage = '';
+    let firebaseSyncFailed = false;
+
+    function getLocalProducts() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch (error) {
+        console.warn('Не вдалося прочитати локальні товари:', error);
+        return null;
+      }
+    }
+
+    function saveLocalProducts() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(productsMap));
+      } catch (error) {
+        console.warn('Не вдалося зберегти товари у localStorage:', error);
+      }
+    }
+
+    function loadCart() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(CART_KEY) || '[]');
+        cart = Array.isArray(saved) ? saved : [];
+      } catch (error) {
+        cart = [];
+      }
+      updateCartBadge();
+      if (document.getElementById('cartModal').style.display === 'flex') {
+        renderCartItems();
+      }
+    }
+
+    function saveCart() {
+      localStorage.setItem(CART_KEY, JSON.stringify(cart));
+      updateCartBadge();
+      if (document.getElementById('cartModal').style.display === 'flex') {
+        renderCartItems();
+      }
+    }
 
     function showToast(text) {
       const toast = document.getElementById('toast');
       toast.innerText = text;
       toast.style.display = 'block';
-      setTimeout(() => { toast.style.display = 'none'; }, 3000);
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => { toast.style.display = 'none'; }, 3000);
     }
 
-    function saveCart() { 
-      localStorage.setItem('3d_toys_cart', JSON.stringify(cart)); 
-      updateCartBadge(); 
+    function ensureCatalogLoaded() {
+      const localProducts = getLocalProducts() || defaultProducts;
+      productsMap = localProducts;
+      saveLocalProducts();
+      renderProducts();
     }
 
-    // =========================================================
-    // РОБОТА З FIREBASE REALTIME DATABASE
-    // =========================================================
     async function fetchProductsFromFirebase() {
+      const fallbackProducts = getLocalProducts() || defaultProducts;
+      productsMap = fallbackProducts;
+      renderProducts();
+
       try {
-        const response = await fetch(`${FIREBASE_DB_URL}.json`);
+        const response = await fetch(`${FIREBASE_DB_URL}.json?ts=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
         const data = await response.json();
-        
-        if (data) {
+        if (data && typeof data === 'object') {
           productsMap = data;
-        } else {
-          // Якщо база порожня - завантажуємо початкові товари
-          await fetch(`${FIREBASE_DB_URL}.json`, {
-            method: 'PUT',
-            body: JSON.stringify(defaultProducts)
-          });
-          productsMap = defaultProducts;
+          saveLocalProducts();
+          firebaseSyncFailed = false;
+          renderProducts();
+          return;
         }
+
+        productsMap = defaultProducts;
+        saveLocalProducts();
         renderProducts();
-      } catch (e) {
-        console.error("Помилка підключення до Firebase:", e);
-        showToast("Помилка завантаження товарів");
+      } catch (error) {
+        console.warn('Firebase недоступна, показуємо локальні товари:', error);
+        productsMap = fallbackProducts;
+        saveLocalProducts();
+        renderProducts();
+        if (!firebaseSyncFailed) {
+          showToast('Firebase недоступна, показані локальні товари');
+          firebaseSyncFailed = true;
+        }
       }
     }
 
-    // Синхронізація товарів кожні 3 секунди з усіма пристроями
     setInterval(fetchProductsFromFirebase, 3000);
 
     function renderProducts() {
@@ -447,12 +500,12 @@
       grid.innerHTML = '';
 
       const productsList = Object.keys(productsMap).map(key => ({
-        key: key,
+        key,
         ...productsMap[key]
       }));
 
-      const filtered = productsList.filter(p => 
-        (p.title && p.title.toLowerCase().includes(search)) || 
+      const filtered = productsList.filter(p =>
+        (p.title && p.title.toLowerCase().includes(search)) ||
         (p.desc && p.desc.toLowerCase().includes(search))
       );
 
@@ -466,7 +519,7 @@
         card.className = 'product-card';
         card.innerHTML = `
           <div class="card-img-wrapper">
-            <img src="${p.image}" alt="${p.title}" onerror="this.src='https://via.placeholder.com/300x200?text=3D+Toy'">
+            <img src="${p.image || 'https://via.placeholder.com/300x200?text=3D+Toy'}" alt="${p.title}" onerror="this.src='https://via.placeholder.com/300x200?text=3D+Toy'">
           </div>
           <div class="card-body">
             <h3 class="card-title">${p.title}</h3>
@@ -492,17 +545,17 @@
       if (!prod) return;
 
       const item = cart.find(c => c.id === key);
-      if (item) { 
-        item.qty += 1; 
-      } else { 
-        cart.push({ id: key, title: prod.title, price: prod.price, qty: 1 }); 
+      if (item) {
+        item.qty += 1;
+      } else {
+        cart.push({ id: key, title: prod.title, price: prod.price, qty: 1 });
       }
       saveCart();
       showToast(`Додано в кошик: "${prod.title}"`);
     }
 
     function updateCartBadge() {
-      const count = cart.reduce((sum, item) => sum + item.qty, 0);
+      const count = cart.reduce((sum, item) => sum + Number(item.qty || 0), 0);
       document.getElementById('cartCount').innerText = count;
     }
 
@@ -524,13 +577,13 @@
       }
 
       cart.forEach(item => {
-        total += item.price * item.qty;
+        total += Number(item.price) * Number(item.qty || 0);
         const div = document.createElement('div');
         div.className = 'cart-item';
         div.innerHTML = `
           <div>
             <h4>${item.title}</h4>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">${item.price} грн x ${item.qty} = ${item.price * item.qty} грн</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">${item.price} грн x ${item.qty} = ${Number(item.price) * Number(item.qty || 0)} грн</p>
           </div>
           <div class="cart-item-controls">
             <button onclick="changeQty('${item.id}', -1)">-</button>
@@ -561,9 +614,6 @@
       renderCartItems();
     }
 
-    // =========================================================
-    // ВІДПРАВКА В TELEGRAM
-    // =========================================================
     async function sendOrderToTelegram(e) {
       e.preventDefault();
 
@@ -585,13 +635,12 @@
       let itemsListText = '';
 
       cart.forEach((item, index) => {
-        const itemSum = item.price * item.qty;
+        const itemSum = Number(item.price) * Number(item.qty || 0);
         totalSum += itemSum;
         itemsListText += `<b>${index + 1}. ${item.title}</b>\n   └ ${item.qty} шт. × ${item.price} грн = <b>${itemSum} грн</b>\n`;
       });
 
       const currentDate = new Date().toLocaleString('uk-UA');
-
       const htmlMessage = `
 🛍 <b>НОВЕ ЗАМОВЛЕННЯ 3D-ІГРАШОК!</b>
 📅 <i>${currentDate}</i>
@@ -626,19 +675,18 @@ ${itemsListText}
           toggleCart();
           document.getElementById('orderForm').reset();
         } else {
-          alert('Помилка Telegram API: ' + data.description);
+          showToast('Telegram API помилка: ' + (data.description || 'невідома помилка'));
+          console.error('Telegram error:', data);
         }
-      } catch (err) {
-        alert('Помилка з’єднання з інтернетом!');
+      } catch (error) {
+        console.error('Помилка Telegram:', error);
+        showToast('Не вдалося відправити в Telegram. Перевір bot token / internet.');
       } finally {
         submitBtn.disabled = false;
         submitBtn.innerText = 'Надіслати замовлення';
       }
     }
 
-    // =========================================================
-    // АДМІНІСТРУВАННЯ ТА СТИСНЕННЯ ФОТО
-    // =========================================================
     function handleFileUpload(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -704,6 +752,10 @@ ${itemsListText}
           body: JSON.stringify(newProd)
         });
 
+        productsMap[newKey] = newProd;
+        saveLocalProducts();
+        renderProducts();
+
         document.getElementById('prodName').value = '';
         document.getElementById('prodPrice').value = '';
         document.getElementById('prodDesc').value = '';
@@ -712,10 +764,13 @@ ${itemsListText}
         document.getElementById('imgPreview').style.display = 'none';
         tempUploadedImage = '';
 
-        showToast('✅ Товар додано у спільну базу!');
-        fetchProductsFromFirebase();
-      } catch (e) {
-        alert('Помилка відправки в базу даних!');
+        showToast('✅ Товар додано у каталог!');
+      } catch (error) {
+        productsMap[newKey] = newProd;
+        saveLocalProducts();
+        renderProducts();
+        showToast('✅ Товар додано локально. Firebase тимчасово недоступна.');
+        console.error('Помилка бази:', error);
       } finally {
         addBtn.disabled = false;
         addBtn.innerText = '+ Додати іграшку у каталог';
@@ -726,10 +781,16 @@ ${itemsListText}
       if (confirm('Видалити цей товар з усіх пристроїв?')) {
         try {
           await fetch(`${FIREBASE_DB_URL}/${key}.json`, { method: 'DELETE' });
+          delete productsMap[key];
+          saveLocalProducts();
+          renderProducts();
           showToast('Товар видалено з бази');
-          fetchProductsFromFirebase();
-        } catch (e) {
-          alert('Помилка видалення з бази');
+        } catch (error) {
+          delete productsMap[key];
+          saveLocalProducts();
+          renderProducts();
+          showToast('Товар видалено локально. Firebase тимчасово недоступна.');
+          console.error('Помилка видалення:', error);
         }
       }
     }
@@ -757,10 +818,16 @@ ${itemsListText}
           method: 'PUT',
           body: JSON.stringify(updatedProd)
         });
+        productsMap[key] = updatedProd;
+        saveLocalProducts();
+        renderProducts();
         showToast('Товар оновлено в базі');
-        fetchProductsFromFirebase();
-      } catch (e) {
-        alert('Помилка оновлення');
+      } catch (error) {
+        productsMap[key] = updatedProd;
+        saveLocalProducts();
+        renderProducts();
+        showToast('Товар оновлено локально. Firebase тимчасово недоступна.');
+        console.error('Помилка оновлення:', error);
       }
     }
 
@@ -800,8 +867,8 @@ ${itemsListText}
       showToast('Ви вийшли з панелі');
     }
 
-    // Запуск
-    updateCartBadge();
+    loadCart();
+    ensureCatalogLoaded();
     updateAdminUI();
     fetchProductsFromFirebase();
   </script>
